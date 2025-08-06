@@ -1,0 +1,31 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url = env("DATABASE_URL")
+}
+
+model Model {
+  id           Int        @id @default(autoincrement())
+  name         String
+  filePath     String
+  thumbnailPath String?
+  fileType     String?
+  size         String?
+  url          String     @default("")
+  createdAt    DateTime   @default(now())
+  materials    Material[]
+}
+
+model Material {
+  id        String   @id @default(uuid())
+  modelId   Int
+  model     Model    @relation(fields: [modelId], references: [id], onDelete: Cascade)
+  name      String
+  data      Json?
+  thumbnailPath String?
+  createdAt DateTime @default(now())
+}
