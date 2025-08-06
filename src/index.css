@@ -1,0 +1,40 @@
+@import './styles/variables.css';
+@import './styles/animations.css';
+@import './styles/components.css';
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  font-family: var(--font-family);
+  line-height: var(--line-height-base);
+  font-weight: var(--font-weight-regular);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+/* === 应用主题样式 === */
+.app-container {
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  transition: background-color 0.3s ease, color 0.3s ease;
+  overflow-x: hidden;
+}
+
+.app-container.theme-dark,
+.app-container.theme-light {
+  background-color: var(--color-bg-page);
+  color: var(--color-content-accent);
+}
