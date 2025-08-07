@@ -1,180 +1,105 @@
 #!/bin/bash
 
-# 会通材质管理系统 - 自动部署脚本
-# 使用方法: ./deploy.sh [环境] [服务器IP]
-# 示例: ./deploy.sh production 47.115.123.456
+# 会通材质管理系统部署脚本
+# 适用于阿里云ECS服务器
 
-set -e  # 遇到错误立即退出
+set -e
 
-# 颜色定义
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+echo "🚀 开始部署会通材质管理系统..."
 
-# 日志函数
-log_info() {
-    echo -e "${BLUE}[INFO]${NC} $1"
-}
-
-log_success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1"
-}
-
-log_warning() {
-    echo -e "${YELLOW}[WARNING]${NC} $1"
-}
-
-log_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
-}
-
-# 检查参数
-ENVIRONMENT=${1:-production}
-SERVER_IP=${2}
-
-if [ -z "$SERVER_IP" ]; then
-    log_error "请提供服务器IP地址"
-    echo "使用方法: $0 [环境] [服务器IP]"
-    echo "示例: $0 production 47.115.123.456"
+# 检查是否为root用户
+if [ "$EUID" -ne 0 ]; then
+    echo "❌ 请使用root权限运行此脚本"
     exit 1
 fi
 
-# 配置变量
-APP_NAME="huitong-material"
-REMOTE_USER="root"
-REMOTE_PATH="/opt/${APP_NAME}"
-DOCKER_IMAGE="${APP_NAME}:latest"
-GIT_REPO="https://github.com/Bavoch/huitong-material-deploy.git"
+# 更新系统
+echo "📦 更新系统包..."
+yum update -y
 
-log_info "开始部署 ${APP_NAME} 到 ${ENVIRONMENT} 环境 (${SERVER_IP})"
+# 安装Docker
+echo "🐳 安装Docker..."
+yum install -y docker
+systemctl start docker
+systemctl enable docker
 
-# 1. 检查本地环境
-log_info "检查本地环境..."
-if ! command -v docker &> /dev/null; then
-    log_error "Docker 未安装，请先安装 Docker"
-    exit 1
-fi
+# 安装Docker Compose
+echo "🔧 安装Docker Compose..."
+curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+chmod +x /usr/local/bin/docker-compose
 
-if ! command -v ssh &> /dev/null; then
-    log_error "SSH 未安装，请先安装 SSH"
-    exit 1
-fi
+# 安装Git
+echo "📥 安装Git..."
+yum install -y git
 
-# 2. 构建 Docker 镜像
-log_info "构建 Docker 镜像..."
-docker build -t ${DOCKER_IMAGE} .
-log_success "Docker 镜像构建完成"
+# 创建应用目录
+APP_DIR="/opt/huitong-material"
+echo "📁 创建应用目录: $APP_DIR"
+mkdir -p $APP_DIR
+cd $APP_DIR
 
-# 3. 保存镜像为 tar 文件
-log_info "导出 Docker 镜像..."
-docker save ${DOCKER_IMAGE} | gzip > ${APP_NAME}.tar.gz
-log_success "Docker 镜像导出完成"
-
-# 4. 检查服务器连接
-log_info "检查服务器连接..."
-if ! ssh -o ConnectTimeout=10 ${REMOTE_USER}@${SERVER_IP} "echo 'SSH连接成功'"; then
-    log_error "无法连接到服务器 ${SERVER_IP}"
-    exit 1
-fi
-log_success "服务器连接正常"
-
-# 5. 在服务器上创建目录
-log_info "在服务器上创建应用目录..."
-ssh ${REMOTE_USER}@${SERVER_IP} "mkdir -p ${REMOTE_PATH}"
-
-# 6. 上传文件到服务器
-log_info "上传文件到服务器..."
-scp ${APP_NAME}.tar.gz ${REMOTE_USER}@${SERVER_IP}:${REMOTE_PATH}/
-scp docker-compose.yml ${REMOTE_USER}@${SERVER_IP}:${REMOTE_PATH}/
-scp nginx.conf ${REMOTE_USER}@${SERVER_IP}:${REMOTE_PATH}/
-scp .env.${ENVIRONMENT} ${REMOTE_USER}@${SERVER_IP}:${REMOTE_PATH}/.env
-log_success "文件上传完成"
-
-# 7. 在服务器上部署
-log_info "在服务器上执行部署..."
-ssh ${REMOTE_USER}@${SERVER_IP} << EOF
-    set -e
-    cd ${REMOTE_PATH}
-    
-    # 安装 Docker 和 Docker Compose (如果未安装)
-    if ! command -v docker &> /dev/null; then
-        echo "安装 Docker..."
-        curl -fsSL https://get.docker.com | sh
-        systemctl start docker
-        systemctl enable docker
-    fi
-    
-    if ! command -v docker-compose &> /dev/null; then
-        echo "安装 Docker Compose..."
-        curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-\$(uname -s)-\$(uname -m)" -o /usr/local/bin/docker-compose
-        chmod +x /usr/local/bin/docker-compose
-    fi
-    
-    # 停止现有服务
-    echo "停止现有服务..."
-    docker-compose down || true
-    
-    # 加载新镜像
-    echo "加载 Docker 镜像..."
-    docker load < ${APP_NAME}.tar.gz
-    
-    # 创建必要的目录
-    mkdir -p backend/uploads
-    mkdir -p prisma
-    mkdir -p ssl
-    
-    # 初始化数据库
-    echo "初始化数据库..."
-    docker run --rm -v \$(pwd)/prisma:/app/prisma -v \$(pwd)/.env:/app/.env ${DOCKER_IMAGE} npx prisma db push || true
-    
-    # 启动服务
-    echo "启动服务..."
-    docker-compose up -d
-    
-    # 等待服务启动
-    echo "等待服务启动..."
-    sleep 30
-    
-    # 检查服务状态
-    echo "检查服务状态..."
-    docker-compose ps
-    
-    # 清理临时文件
-    rm -f ${APP_NAME}.tar.gz
-    
-    echo "部署完成！"
-EOF
-
-log_success "服务器部署完成"
-
-# 8. 清理本地临时文件
-log_info "清理本地临时文件..."
-rm -f ${APP_NAME}.tar.gz
-
-# 9. 验证部署
-log_info "验证部署状态..."
-sleep 10
-if curl -f http://${SERVER_IP}/health &> /dev/null; then
-    log_success "应用部署成功！访问地址: http://${SERVER_IP}"
+# 克隆代码仓库
+echo "📥 克隆代码仓库..."
+if [ -d ".git" ]; then
+    git pull origin main
 else
-    log_warning "应用可能还在启动中，请稍后访问: http://${SERVER_IP}"
+    git clone https://github.com/Bavoch/huitong-material-deploy.git .
 fi
 
-# 10. 显示有用信息
-echo ""
-log_info "部署信息:"
-echo "  应用名称: ${APP_NAME}"
-echo "  环境: ${ENVIRONMENT}"
-echo "  服务器: ${SERVER_IP}"
-echo "  访问地址: http://${SERVER_IP}"
-echo "  健康检查: http://${SERVER_IP}/health"
-echo ""
-log_info "常用命令:"
-echo "  查看日志: ssh ${REMOTE_USER}@${SERVER_IP} 'cd ${REMOTE_PATH} && docker-compose logs -f'"
-echo "  重启服务: ssh ${REMOTE_USER}@${SERVER_IP} 'cd ${REMOTE_PATH} && docker-compose restart'"
-echo "  停止服务: ssh ${REMOTE_USER}@${SERVER_IP} 'cd ${REMOTE_PATH} && docker-compose down'"
-echo "  更新应用: ./deploy.sh ${ENVIRONMENT} ${SERVER_IP}"
+# 复制环境配置文件
+echo "⚙️ 配置环境变量..."
+if [ ! -f ".env" ]; then
+    cp .env.production .env
+    echo "⚠️ 请编辑 .env 文件配置数据库连接信息"
+    echo "⚠️ 文件位置: $APP_DIR/.env"
+fi
 
-log_success "部署脚本执行完成！"
+# 创建SSL证书目录
+echo "🔐 创建SSL证书目录..."
+mkdir -p ssl
+if [ ! -f "ssl/cert.pem" ] || [ ! -f "ssl/key.pem" ]; then
+    echo "⚠️ 请将SSL证书文件放置到 $APP_DIR/ssl/ 目录下"
+    echo "⚠️ 需要文件: cert.pem 和 key.pem"
+    echo "⚠️ 如果没有SSL证书，可以使用Let's Encrypt获取免费证书"
+fi
+
+# 创建上传目录
+echo "📁 创建上传目录..."
+mkdir -p backend/uploads
+chmod 755 backend/uploads
+
+# 构建并启动服务
+echo "🏗️ 构建并启动服务..."
+docker-compose down
+docker-compose build
+docker-compose up -d
+
+# 等待服务启动
+echo "⏳ 等待服务启动..."
+sleep 30
+
+# 检查服务状态
+echo "🔍 检查服务状态..."
+docker-compose ps
+
+# 运行数据库迁移
+echo "🗄️ 运行数据库迁移..."
+docker-compose exec app npx prisma db push
+
+echo "✅ 部署完成！"
+echo ""
+echo "📋 部署信息:"
+echo "   - 应用目录: $APP_DIR"
+echo "   - HTTP端口: 80"
+echo "   - HTTPS端口: 443"
+echo "   - 数据库端口: 5432"
+echo ""
+echo "🔧 后续配置:"
+echo "   1. 编辑 $APP_DIR/.env 文件配置数据库连接"
+echo "   2. 将SSL证书放置到 $APP_DIR/ssl/ 目录"
+echo "   3. 配置域名解析指向服务器IP"
+echo "   4. 重启服务: cd $APP_DIR && docker-compose restart"
+echo ""
+echo "📊 查看日志: cd $APP_DIR && docker-compose logs -f"
+echo "🔄 重启服务: cd $APP_DIR && docker-compose restart"
+echo "🛑 停止服务: cd $APP_DIR && docker-compose down"
