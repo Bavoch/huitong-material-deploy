@@ -1,157 +1,57 @@
-name: Deploy to Aliyun Server
+name: Deploy to Alibaba Cloud ECS
 
 on:
   push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
+    branches: [ main ]
   workflow_dispatch:
-    inputs:
-      environment:
-        description: 'Deployment environment'
-        required: true
-        default: 'production'
-        type: choice
-        options:
-        - production
-        - staging
-
-env:
-  APP_NAME: huitong-material
-  DOCKER_IMAGE: huitong-material:latest
 
 jobs:
-  test:
+  deploy:
     runs-on: ubuntu-latest
+    
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-
+      
     - name: Setup Node.js
       uses: actions/setup-node@v4
       with:
         node-version: '18'
         cache: 'npm'
-
+        
     - name: Install dependencies
       run: npm ci
-
-    - name: Run linter
-      run: npm run lint
-
-    - name: Generate Prisma client
-      run: npx prisma generate
-
+      
     - name: Build application
-      run: npm run build
-
-  build:
-    needs: test
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
-
-    - name: Build Docker image
       run: |
-        docker build -t ${{ env.DOCKER_IMAGE }} .
-        docker save ${{ env.DOCKER_IMAGE }} | gzip > ${{ env.APP_NAME }}.tar.gz
-
-    - name: Upload Docker image artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: docker-image
-        path: ${{ env.APP_NAME }}.tar.gz
-        retention-days: 1
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master'
-    environment: production
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Download Docker image artifact
-      uses: actions/download-artifact@v4
-      with:
-        name: docker-image
-
-    - name: Setup SSH key
-      run: |
-        mkdir -p ~/.ssh
-        echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
-        chmod 600 ~/.ssh/id_rsa
-        ssh-keyscan -H ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts
-
-    - name: Deploy to server
-      env:
-        SERVER_HOST: ${{ secrets.SERVER_HOST }}
-        SERVER_USER: ${{ secrets.SERVER_USER }}
-        REMOTE_PATH: /opt/${{ env.APP_NAME }}
-      run: |
-        # 上传文件到服务器
-        scp ${{ env.APP_NAME }}.tar.gz ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.REMOTE_PATH }}/
-        scp docker-compose.yml ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.REMOTE_PATH }}/
-        scp nginx.conf ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.REMOTE_PATH }}/
-        scp .env.production ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }}:${{ env.REMOTE_PATH }}/.env
+        npx prisma generate
+        npm run build
         
-        # 在服务器上执行部署
-        ssh ${{ env.SERVER_USER }}@${{ env.SERVER_HOST }} << 'EOF'
-          set -e
-          cd ${{ env.REMOTE_PATH }}
+    - name: Deploy to Alibaba Cloud ECS
+      uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ secrets.ALIYUN_HOST }}
+        username: ${{ secrets.ALIYUN_USERNAME }}
+        key: ${{ secrets.ALIYUN_SSH_KEY }}
+        port: ${{ secrets.ALIYUN_PORT }}
+        script: |
+          cd /opt/huitong-material
+          
+          # 拉取最新代码
+          git pull origin main
           
           # 停止现有服务
-          docker-compose down || true
+          docker-compose down
           
-          # 加载新镜像
-          docker load < ${{ env.APP_NAME }}.tar.gz
-          
-          # 创建必要的目录
-          mkdir -p backend/uploads
-          mkdir -p prisma
-          mkdir -p ssl
-          
-          # 初始化数据库
-          docker run --rm -v $(pwd)/prisma:/app/prisma -v $(pwd)/.env:/app/.env ${{ env.DOCKER_IMAGE }} npx prisma db push || true
-          
-          # 启动服务
+          # 重新构建并启动服务
+          docker-compose build --no-cache
           docker-compose up -d
           
           # 等待服务启动
           sleep 30
           
+          # 运行数据库迁移
+          docker-compose exec -T app npx prisma db push
+          
           # 检查服务状态
           docker-compose ps
-          
-          # 清理临时文件
-          rm -f ${{ env.APP_NAME }}.tar.gz
-          
-          echo "部署完成！"
-        EOF
-
-    - name: Verify deployment
-      run: |
-        sleep 10
-        if curl -f http://${{ secrets.SERVER_HOST }}/health; then
-          echo "✅ 部署成功！应用正在运行"
-        else
-          echo "⚠️ 应用可能还在启动中"
-        fi
-
-    - name: Notify deployment status
-      if: always()
-      run: |
-        if [ "${{ job.status }}" == "success" ]; then
-          echo "🚀 部署成功！"
-          echo "访问地址: http://${{ secrets.SERVER_HOST }}"
-        else
-          echo "❌ 部署失败！"
-        fi
